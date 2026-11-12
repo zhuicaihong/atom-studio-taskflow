@@ -252,7 +252,7 @@ function readLlmRequest(body) {
   };
 }
 
-async function callLlm(config, signal) {
+async function requestLlm(config, signal, stream = false) {
   const upstream = await fetch(config.url, {
     method: 'POST',
     headers: {
@@ -263,16 +263,70 @@ async function callLlm(config, signal) {
       model: config.model,
       messages: config.messages,
       temperature: config.temperature,
+      ...(stream ? { stream: true } : {}),
     }),
     signal,
   });
-  const data = await upstream.json().catch(() => ({}));
   if (!upstream.ok) {
+    const data = await upstream.json().catch(() => ({}));
     const err = new Error(data?.error?.message || data?.message || `模型服务返回 ${upstream.status}`);
     err.status = upstream.status;
     throw err;
   }
+  return upstream;
+}
+
+async function callLlm(config, signal) {
+  const upstream = await requestLlm(config, signal);
+  const data = await upstream.json().catch(() => ({}));
   const content = data?.choices?.[0]?.message?.content || '';
+  if (!content) throw new Error('模型没有返回内容');
+  return content;
+}
+
+async function streamLlm(config, signal, onDelta, onActivity) {
+  const upstream = await requestLlm(config, signal, true);
+  onActivity();
+  const contentType = upstream.headers.get('content-type') || '';
+
+  // 部分兼容服务会忽略 stream 参数，此时仍接受普通 JSON 响应。
+  if (!contentType.includes('text/event-stream')) {
+    const data = await upstream.json().catch(() => ({}));
+    const content = data?.choices?.[0]?.message?.content || '';
+    if (!content) throw new Error('模型没有返回内容');
+    onDelta(content);
+    return content;
+  }
+
+  let content = '';
+  let buffer = '';
+  const decoder = new TextDecoder();
+  const consumeLine = (line) => {
+    if (!line.startsWith('data:')) return false;
+    const payload = line.slice(5).trim();
+    if (!payload) return false;
+    if (payload === '[DONE]') return true;
+    const data = JSON.parse(payload);
+    if (data?.error) throw new Error(data.error.message || '模型生成失败');
+    const delta = data?.choices?.[0]?.delta?.content ?? data?.choices?.[0]?.message?.content ?? '';
+    if (typeof delta === 'string' && delta) {
+      content += delta;
+      onDelta(delta);
+    }
+    return false;
+  };
+
+  for await (const chunk of upstream.body) {
+    onActivity();
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (consumeLine(line)) return content;
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) consumeLine(buffer);
   if (!content) throw new Error('模型没有返回内容');
   return content;
 }
@@ -298,13 +352,11 @@ app.post('/api/llm/chat', async (req, res) => {
 
 const llmJobs = new Map();
 const LLM_JOB_TTL = 10 * 60 * 1000;
+const LLM_IDLE_TIMEOUT = Number(process.env.LLM_IDLE_TIMEOUT_MS || 180000);
 
 setInterval(() => {
   for (const [id, job] of llmJobs) {
-    if (Date.now() - job.createdAt > LLM_JOB_TTL) {
-      job.controller?.abort();
-      llmJobs.delete(id);
-    }
+    if (job.finishedAt && Date.now() - job.finishedAt > LLM_JOB_TTL) llmJobs.delete(id);
   }
 }, 60000).unref();
 
@@ -313,18 +365,41 @@ app.post('/api/llm/jobs', (req, res) => {
   if (config.error) return res.status(400).json({ error: config.error });
   const id = crypto.randomUUID();
   const controller = new AbortController();
-  const job = { status: 'running', content: '', error: '', createdAt: Date.now(), controller };
+  const job = {
+    status: 'running',
+    content: '',
+    error: '',
+    createdAt: Date.now(),
+    finishedAt: null,
+    controller,
+  };
   llmJobs.set(id, job);
-  const timer = setTimeout(() => controller.abort(), 180000);
+
+  // 不限制生成总时长；只有完全收不到新数据时才触发空闲超时。
+  let idleTimer;
+  const resetIdleTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => controller.abort(), LLM_IDLE_TIMEOUT);
+  };
+  resetIdleTimer();
+
   (async () => {
     try {
-      job.content = await callLlm(config, controller.signal);
+      job.content = await streamLlm(
+        config,
+        controller.signal,
+        (delta) => { job.content += delta; },
+        resetIdleTimer
+      );
       job.status = 'done';
     } catch (err) {
       job.status = 'error';
-      job.error = err?.name === 'AbortError' ? '模型生成超时（180s）' : err.message || '无法连接模型服务';
+      job.error = err?.name === 'AbortError'
+        ? `模型连续 ${Math.round(LLM_IDLE_TIMEOUT / 1000)} 秒没有返回新内容，已停止等待；请重试或更换模型`
+        : err.message || '无法连接模型服务';
     } finally {
-      clearTimeout(timer);
+      clearTimeout(idleTimer);
+      job.finishedAt = Date.now();
       job.controller = null;
     }
   })();
@@ -334,9 +409,17 @@ app.post('/api/llm/jobs', (req, res) => {
 app.get('/api/llm/jobs/:id', (req, res) => {
   const job = llmJobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: '生成任务不存在或已过期，请重试' });
-  if (job.status === 'done') return res.json({ status: 'done', content: job.content });
-  if (job.status === 'error') return res.json({ status: 'error', error: job.error });
-  res.json({ status: 'running' });
+  const elapsedSeconds = Math.floor(((job.finishedAt || Date.now()) - job.createdAt) / 1000);
+  if (job.status === 'done') {
+    return res.json({ status: 'done', content: job.content, receivedChars: job.content.length, elapsedSeconds });
+  }
+  if (job.status === 'error') return res.json({ status: 'error', error: job.error, elapsedSeconds });
+  res.json({
+    status: 'running',
+    content: job.content.slice(-2400),
+    receivedChars: job.content.length,
+    elapsedSeconds,
+  });
 });
 
 /* ------------------------------------------------------------------ */

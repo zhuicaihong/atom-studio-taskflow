@@ -194,6 +194,9 @@ export function ChatPanel({
                         <div className="step-text">
                           <div className="step-label">{s.label}</div>
                           <div className="step-detail">{s.detail}</div>
+                        {s.status === 'running' && s.streamText && (
+                          <pre className="llm-stream"><code>{s.streamText}</code></pre>
+                        )}
                         </div>
                       </div>
                     ))}
@@ -223,6 +226,9 @@ export function ChatPanel({
                       <div className="step-text">
                         <div className="step-label">{s.label}</div>
                         <div className="step-detail">{s.detail}</div>
+                        {s.status === 'running' && s.streamText && (
+                          <pre className="llm-stream"><code>{s.streamText}</code></pre>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -231,11 +237,11 @@ export function ChatPanel({
                   <div className="msg-content">
                     <RichText text={draft.content} />
                   </div>
-                ) : (
+                ) : !draft.steps.some((s) => s.streamText) ? (
                   <div className="typing">
                     <i /><i /><i />
                   </div>
-                )}
+                ) : null}
               </div>
             </div>
           )}

@@ -220,7 +220,20 @@ export default function App() {
     setDraft({ steps: [step1, step2], content: '', engine: 'llm' });
 
     const [result] = await Promise.all([
-      generateWithLLM(llm, text, isRevise ? project!.previewHtml : undefined),
+      generateWithLLM(llm, text, isRevise ? project!.previewHtml : undefined, (progress) => {
+        setDraft((current) => current ? {
+          ...current,
+          steps: current.steps.map((step) => step.id === 'l2' ? {
+            ...step,
+            detail: progress.receivedChars > 0
+              ? `实时接收中 · ${progress.receivedChars.toLocaleString()} 字符 · ${progress.elapsedSeconds}s`
+              : `模型已连接，等待正文输出 · ${progress.elapsedSeconds}s`,
+            streamText: progress.content
+              ? `${progress.receivedChars > progress.content.length ? '…\n' : ''}${progress.content}`
+              : undefined,
+          } : step),
+        } : current);
+      }),
       sleep(700),
     ]);
 

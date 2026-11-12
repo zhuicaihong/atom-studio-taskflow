@@ -24,10 +24,17 @@ const REVISE_PROMPT = `你是一名资深产品工程师。下面是你之前生
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+type ProgressHandler = (progress: {
+  content: string;
+  receivedChars: number;
+  elapsedSeconds: number;
+}) => void;
+
 async function generateContent(
   config: LLMConfig,
   messages: { role: string; content: string }[],
-  temperature: number
+  temperature: number,
+  onProgress?: ProgressHandler
 ): Promise<string> {
   const res = await fetch('/api/llm/jobs', {
     method: 'POST',
@@ -37,22 +44,31 @@ async function generateContent(
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.id) throw new Error(data?.error || `无法创建生成任务（${res.status}）`);
 
-  const deadline = Date.now() + 190000;
-  while (Date.now() < deadline) {
-    await sleep(2000);
+  // 总时长不限，由服务端检测“无新数据”的空闲超时。
+  while (true) {
+    await sleep(1500);
     const poll = await fetch(`/api/llm/jobs/${data.id}`);
     const state = await poll.json().catch(() => ({}));
     if (!poll.ok) throw new Error(state?.error || `查询生成进度失败（${poll.status}）`);
+    if (state.status === 'running') {
+      onProgress?.({
+        content: String(state.content || ''),
+        receivedChars: Number(state.receivedChars || 0),
+        elapsedSeconds: Number(state.elapsedSeconds || 0),
+      });
+      continue;
+    }
     if (state.status === 'done') return String(state.content || '');
     if (state.status === 'error') throw new Error(state.error || '模型生成失败');
+    throw new Error('生成任务状态异常，请重试');
   }
-  throw new Error('模型生成超时，请重试或更换更快的模型');
 }
 
 export async function generateWithLLM(
   config: LLMConfig,
   prompt: string,
-  previousHtml?: string
+  previousHtml?: string,
+  onProgress?: ProgressHandler
 ): Promise<{ html: string; note: string }> {
   const messages = previousHtml
     ? [
@@ -64,7 +80,7 @@ export async function generateWithLLM(
         { role: 'user', content: prompt },
       ];
 
-  const text = await generateContent(config, messages, 0.6);
+  const text = await generateContent(config, messages, 0.6, onProgress);
   const match = text.match(/```(?:html)?\s*([\s\S]*?)```/i);
   const html = (match ? match[1] : text).trim();
   if (!/<html[\s>]/i.test(html)) {

@@ -53,6 +53,7 @@ export interface AgentStep {
   label: string;
   detail: string;
   status: 'running' | 'done' | 'error';
+  streamText?: string;
 }
 
 export interface ChatMessage {
