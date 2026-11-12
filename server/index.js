@@ -230,10 +230,10 @@ app.get('/p/:slug', (req, res) => {
 /* LLM 代理（密钥仅在单次请求中透传，不落盘）                              */
 /* ------------------------------------------------------------------ */
 
-app.post('/api/llm/chat', async (req, res) => {
-  const { baseUrl, apiKey, model, messages, temperature } = req.body || {};
+function readLlmRequest(body) {
+  const { baseUrl, apiKey, model, messages, temperature } = body || {};
   if (!baseUrl || !apiKey || !model || !Array.isArray(messages)) {
-    return res.status(400).json({ error: '缺少模型配置（baseUrl / apiKey / model）' });
+    return { error: '缺少模型配置（baseUrl / apiKey / model）' };
   }
   let url;
   try {
@@ -241,39 +241,102 @@ app.post('/api/llm/chat', async (req, res) => {
     if (!/^https?:$/.test(u.protocol)) throw new Error('unsupported');
     url = u.toString().replace(/\/+$/, '') + '/chat/completions';
   } catch {
-    return res.status(400).json({ error: 'Base URL 不合法' });
+    return { error: 'Base URL 不合法' };
   }
+  return {
+    url,
+    apiKey,
+    model,
+    messages,
+    temperature: typeof temperature === 'number' ? temperature : 0.6,
+  };
+}
+
+async function callLlm(config, signal) {
+  const upstream = await fetch(config.url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: config.messages,
+      temperature: config.temperature,
+    }),
+    signal,
+  });
+  const data = await upstream.json().catch(() => ({}));
+  if (!upstream.ok) {
+    const err = new Error(data?.error?.message || data?.message || `模型服务返回 ${upstream.status}`);
+    err.status = upstream.status;
+    throw err;
+  }
+  const content = data?.choices?.[0]?.message?.content || '';
+  if (!content) throw new Error('模型没有返回内容');
+  return content;
+}
+
+// 测试连接保留短请求；完整应用生成走下方异步任务，避免网关长连接超时。
+app.post('/api/llm/chat', async (req, res) => {
+  const config = readLlmRequest(req.body);
+  if (config.error) return res.status(400).json({ error: config.error });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120000);
   try {
-    const upstream = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: typeof temperature === 'number' ? temperature : 0.6,
-      }),
-      signal: controller.signal,
-    });
-    const data = await upstream.json().catch(() => ({}));
-    if (!upstream.ok) {
-      return res.status(upstream.status).json({
-        error: data?.error?.message || data?.message || `模型服务返回 ${upstream.status}`,
-      });
-    }
-    const content = data?.choices?.[0]?.message?.content || '';
-    if (!content) return res.status(502).json({ error: '模型没有返回内容' });
+    const content = await callLlm(config, controller.signal);
     res.json({ content });
   } catch (err) {
     const aborted = err?.name === 'AbortError';
-    res.status(aborted ? 504 : 502).json({ error: aborted ? '模型响应超时（120s）' : '无法连接模型服务' });
+    const status = aborted ? 504 : err.status || 502;
+    const message = aborted ? '模型响应超时（120s）' : err.message || '无法连接模型服务';
+    res.status(status).json({ error: message });
   } finally {
     clearTimeout(timer);
   }
+});
+
+const llmJobs = new Map();
+const LLM_JOB_TTL = 10 * 60 * 1000;
+
+setInterval(() => {
+  for (const [id, job] of llmJobs) {
+    if (Date.now() - job.createdAt > LLM_JOB_TTL) {
+      job.controller?.abort();
+      llmJobs.delete(id);
+    }
+  }
+}, 60000).unref();
+
+app.post('/api/llm/jobs', (req, res) => {
+  const config = readLlmRequest(req.body);
+  if (config.error) return res.status(400).json({ error: config.error });
+  const id = crypto.randomUUID();
+  const controller = new AbortController();
+  const job = { status: 'running', content: '', error: '', createdAt: Date.now(), controller };
+  llmJobs.set(id, job);
+  const timer = setTimeout(() => controller.abort(), 180000);
+  (async () => {
+    try {
+      job.content = await callLlm(config, controller.signal);
+      job.status = 'done';
+    } catch (err) {
+      job.status = 'error';
+      job.error = err?.name === 'AbortError' ? '模型生成超时（180s）' : err.message || '无法连接模型服务';
+    } finally {
+      clearTimeout(timer);
+      job.controller = null;
+    }
+  })();
+  res.status(202).json({ id });
+});
+
+app.get('/api/llm/jobs/:id', (req, res) => {
+  const job = llmJobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: '生成任务不存在或已过期，请重试' });
+  if (job.status === 'done') return res.json({ status: 'done', content: job.content });
+  if (job.status === 'error') return res.json({ status: 'error', error: job.error });
+  res.json({ status: 'running' });
 });
 
 /* ------------------------------------------------------------------ */

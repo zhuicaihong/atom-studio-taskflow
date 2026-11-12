@@ -22,6 +22,33 @@ const REVISE_PROMPT = `你是一名资深产品工程师。下面是你之前生
 3. 所有 CSS/JS 仍然内联，不使用外部资源，数据继续用 localStorage 持久化。
 4. 视觉质量与之前保持同等或更高水平。`;
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function generateContent(
+  config: LLMConfig,
+  messages: { role: string; content: string }[],
+  temperature: number
+): Promise<string> {
+  const res = await fetch('/api/llm/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...config, messages, temperature }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.id) throw new Error(data?.error || `无法创建生成任务（${res.status}）`);
+
+  const deadline = Date.now() + 190000;
+  while (Date.now() < deadline) {
+    await sleep(2000);
+    const poll = await fetch(`/api/llm/jobs/${data.id}`);
+    const state = await poll.json().catch(() => ({}));
+    if (!poll.ok) throw new Error(state?.error || `查询生成进度失败（${poll.status}）`);
+    if (state.status === 'done') return String(state.content || '');
+    if (state.status === 'error') throw new Error(state.error || '模型生成失败');
+  }
+  throw new Error('模型生成超时，请重试或更换更快的模型');
+}
+
 export async function generateWithLLM(
   config: LLMConfig,
   prompt: string,
@@ -37,16 +64,7 @@ export async function generateWithLLM(
         { role: 'user', content: prompt },
       ];
 
-  const res = await fetch('/api/llm/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...config, messages, temperature: 0.6 }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data?.error || `模型请求失败（${res.status}）`);
-  }
-  const text: string = data?.content || '';
+  const text = await generateContent(config, messages, 0.6);
   const match = text.match(/```(?:html)?\s*([\s\S]*?)```/i);
   const html = (match ? match[1] : text).trim();
   if (!/<html[\s>]/i.test(html)) {
