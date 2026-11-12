@@ -5,7 +5,7 @@
 Atom Studio 是一个 Agent 驱动的应用生成器：输入自然语言需求，Agent 会完成需求拆解、数据建模、界面生成、交互实现与数据持久化，并在浏览器中直接运行生成结果。生成的应用可以继续用自然语言迭代、查看与导出代码、生成公开分享链接。
 
 - 在线体验：https://37jaynrp83joqs3z23w.traesite.cn
-- 源码仓库：<!-- GITHUB_URL -->
+- 源码仓库：https://github.com/zhuicaihong/atom-studio-taskflow
 
 ## 1. 功能
 
