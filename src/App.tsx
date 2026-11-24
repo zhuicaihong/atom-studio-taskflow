@@ -344,7 +344,7 @@ export default function App() {
           projectName={project?.name || null}
           projectMeta={
             project
-              ? `${project.engine === 'llm' ? '大模型生成' : '内置引擎'} · ${project.files.length} 个文件 · 自动保存`
+              ? `大模型生成 · ${project.files.length} 个文件 · 自动保存`
               : ''
           }
           messages={messages}
