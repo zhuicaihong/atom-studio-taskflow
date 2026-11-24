@@ -11,7 +11,6 @@ import {
   Layers,
   Sparkles,
   X,
-  Zap,
 } from 'lucide-react';
 import type { LLMConfig, ToastItem } from '../types';
 import { testLLM } from '../lib/agent/llm';
@@ -102,15 +101,13 @@ export function Onboarding({ busy, onCreate }: { busy: boolean; onCreate: (name:
 /* ------------------------------------------------------------------ */
 
 interface SettingsProps {
-  engine: 'builtin' | 'llm';
   llm: LLMConfig;
   serverDefault: { available: boolean; model: string } | null;
   onClose: () => void;
-  onSave: (engine: 'builtin' | 'llm', llm: LLMConfig) => void;
+  onSave: (llm: LLMConfig) => void;
 }
 
-export function SettingsModal({ engine, llm, serverDefault, onClose, onSave }: SettingsProps) {
-  const [nextEngine, setNextEngine] = useState(engine);
+export function SettingsModal({ llm, serverDefault, onClose, onSave }: SettingsProps) {
   const [config, setConfig] = useState<LLMConfig>(llm);
   const [useDefault, setUseDefault] = useState(Boolean(llm.useDefault && serverDefault?.available));
   const [showKey, setShowKey] = useState(false);
@@ -143,29 +140,9 @@ export function SettingsModal({ engine, llm, serverDefault, onClose, onSave }: S
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h2>生成引擎设置</h2>
-          <p className="sub">内置引擎开箱即用；接入大模型后可生成更自由的应用。</p>
+          <h2>生成模型设置</h2>
+          <p className="sub">本站已内置默认大模型，打开即用；也可以填写自己的 Key。</p>
           <button className="icon-button modal-close" onClick={onClose}><X size={15} /></button>
-        </div>
-
-        <div className="engine-cards">
-          <button
-            className={`engine-card ${nextEngine === 'builtin' ? 'active' : ''}`}
-            onClick={() => setNextEngine('builtin')}
-          >
-            <b><Zap size={12} style={{ verticalAlign: -1 }} /> 内置引擎</b>
-            <span>本地规则生成，无需 API Key，响应快、稳定，支持任务/习惯/记账/笔记等场景。</span>
-          </button>
-          <button
-            className={`engine-card ${nextEngine === 'llm' ? 'active' : ''}`}
-            onClick={() => setNextEngine('llm')}
-          >
-            <b><Sparkles size={12} style={{ verticalAlign: -1 }} /> 大模型</b>
-            <span>
-              OpenAI 兼容接口，可生成任意类型的单文件应用。
-              {serverDefault?.available ? ' 已配置服务端默认模型，可直接使用。' : ' 需要你自己的 API Key。'}
-            </span>
-          </button>
         </div>
 
         {serverDefault?.available && (
@@ -241,12 +218,11 @@ export function SettingsModal({ engine, llm, serverDefault, onClose, onSave }: S
             className="btn primary"
             onClick={() => {
               const usingServerModel = useDefault && Boolean(serverDefault?.available);
-              if (nextEngine === 'llm' && !usingServerModel && !config.apiKey.trim()) {
-                setResult({ ok: false, text: '使用大模型前需要填写 API Key，或勾选服务端默认模型' });
+              if (!usingServerModel && (!config.baseUrl.trim() || !config.apiKey.trim() || !config.model.trim())) {
+                setResult({ ok: false, text: '请填写 Base URL、API Key 和模型名称，或勾选服务端默认模型' });
                 return;
               }
               onSave(
-                nextEngine,
                 usingServerModel
                   ? { baseUrl: '', apiKey: '', model: serverDefault!.model, useDefault: true }
                   : { ...config, useDefault: false }

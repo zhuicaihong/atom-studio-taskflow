@@ -5,7 +5,7 @@ import { ChatPanel } from './components/ChatPanel';
 import { PreviewPanel } from './components/PreviewPanel';
 import { Onboarding, SettingsModal, ShareModal, ToastRoot } from './components/Modals';
 import { api, getDefaultModel, loadLLMConfig, saveLLMConfig } from './lib/api';
-import { generate, makeAgentMessage, makeUserMessage, revise } from './lib/agent/engine';
+import { makeAgentMessage, makeUserMessage } from './lib/agent/engine';
 import { inferSpec } from './lib/agent/specs';
 import { generateWithLLM } from './lib/agent/llm';
 import { uid } from './lib/id';
@@ -20,18 +20,6 @@ import type {
 } from './types';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function animateSteps(steps: AgentStep[], update: (steps: AgentStep[]) => void) {
-  const shown: AgentStep[] = [];
-  for (let i = 0; i < steps.length; i++) {
-    shown.push({ ...steps[i], status: 'running' });
-    update(shown.map((s) => ({ ...s })));
-    await sleep(i === 0 ? 480 : 320);
-    shown[shown.length - 1] = { ...steps[i], status: 'done' };
-    update(shown.map((s) => ({ ...s })));
-    await sleep(70);
-  }
-}
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -50,11 +38,6 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [mobileView, setMobileView] = useState<'chat' | 'preview'>('chat');
   const [llm, setLlm] = useState<LLMConfig>(() => loadLLMConfig());
-  const [engine, setEngine] = useState<'builtin' | 'llm'>(() => {
-    const saved = localStorage.getItem('atom-engine');
-    const config = loadLLMConfig();
-    return saved === 'llm' && config.apiKey ? 'llm' : 'builtin';
-  });
   const [serverModel, setServerModel] = useState<{ available: boolean; model: string } | null>(null);
 
   useEffect(() => {
@@ -63,11 +46,9 @@ export default function App() {
       if (cancelled) return;
       setServerModel(info);
       if (!info.available) return;
-      if (localStorage.getItem('atom-engine') === 'builtin') return;
       const saved = loadLLMConfig();
       if (saved.apiKey) return;
       setLlm({ ...saved, model: info.model, useDefault: true });
-      setEngine('llm');
     });
     return () => {
       cancelled = true;
@@ -160,63 +141,16 @@ export default function App() {
     }
   };
 
-  const runBuiltin = async (text: string, userMsg: ChatMessage) => {
-    const isRevise = !!project && !!project.spec;
-    if (project && !project.spec) {
-      throw new Error('当前应用由大模型生成，内置引擎无法增量修改。请切换到「大模型」引擎，或新建一个应用。');
-    }
-    setDraft({ steps: [], content: '', engine: 'builtin' });
-
-    if (isRevise) {
-      const output = revise(project!.spec!, text);
-      await animateSteps(output.steps, (steps) => setDraft({ steps, content: '', engine: 'builtin' }));
-      const agentMsg = makeAgentMessage(output.reply, output.steps, 'builtin');
-      const finalMessages = [...messages, userMsg, agentMsg];
-      setDraft(null);
-      setMessages(finalMessages);
-      if (output.changed) {
-        const res = await api.updateProject(project!.id, {
-          spec: output.spec,
-          files: output.files,
-          previewHtml: output.previewHtml,
-          messages: finalMessages,
-          engine: 'builtin',
-        });
-        setProject(res.project);
-        setPreviewTab('preview');
-      } else {
-        const res = await api.updateProject(project!.id, { messages: finalMessages });
-        setProject(res.project);
-      }
-    } else {
-      const output = generate(text);
-      await animateSteps(output.steps, (steps) => setDraft({ steps, content: '', engine: 'builtin' }));
-      const agentMsg = makeAgentMessage(output.reply, output.steps, 'builtin');
-      const finalMessages = [...messages, userMsg, agentMsg];
-      setDraft(null);
-      setMessages(finalMessages);
-      const res = await api.createProject({
-        name: output.name,
-        prompt: text,
-        engine: 'builtin',
-        spec: output.spec,
-        files: output.files,
-        previewHtml: output.previewHtml,
-        messages: finalMessages,
-      });
-      setProject(res.project);
-      setPreviewTab('preview');
-      setMobileView('preview');
-    }
-    await refreshProjects();
-  };
-
   const runLLM = async (text: string, userMsg: ChatMessage) => {
-    const usingServerModel = Boolean(llm.useDefault && serverModel?.available);
-    if (!usingServerModel && !llm.apiKey.trim()) {
+    const info = serverModel || (await getDefaultModel());
+    const useServer = !llm.apiKey.trim() && info.available;
+    if (!useServer && !llm.apiKey.trim()) {
       setSettingsOpen(true);
       throw new Error('还没有配置大模型 API Key，请先在设置里填写。');
     }
+    const active: LLMConfig = useServer
+      ? { ...llm, model: llm.model || info.model, useDefault: true }
+      : { ...llm, useDefault: false };
     const isRevise = !!project;
     const step1: AgentStep = {
       id: 'l1',
@@ -227,7 +161,7 @@ export default function App() {
     const step2: AgentStep = {
       id: 'l2',
       label: '调用大模型',
-      detail: `${llm.model || '模型'} · ${isRevise ? '增量修改' : '从零生成'}完整应用`,
+      detail: `${active.model || '模型'} · ${isRevise ? '增量修改' : '从零生成'}完整应用`,
       status: 'running',
     };
     const step3: AgentStep = {
@@ -239,7 +173,7 @@ export default function App() {
     setDraft({ steps: [step1, step2], content: '', engine: 'llm' });
 
     const [result] = await Promise.all([
-      generateWithLLM(llm, text, isRevise ? project!.previewHtml : undefined, (progress) => {
+      generateWithLLM(active, text, isRevise ? project!.previewHtml : undefined, (progress) => {
         setDraft((current) => current ? {
           ...current,
           steps: current.steps.map((step) => step.id === 'l2' ? {
@@ -262,8 +196,8 @@ export default function App() {
     const step4: AgentStep = { id: 'l4', label: '装载预览', detail: '写入沙箱 iframe，可在右侧直接操作', status: 'done' };
     const finalSteps: AgentStep[] = [step1, { ...step2, status: 'done' }, { ...step3, status: 'done' }, step4];
     const reply = isRevise
-      ? `已根据你的要求重新生成应用。\n\n- 生成方式：${llm.model} 完整重写单文件应用\n- 数据存储：浏览器 localStorage\n- 提醒：大模型生成的应用已替换上一版，可继续用自然语言迭代`
-      : `已经为你生成一个完整应用，直接运行在右侧预览区。\n\n- 生成方式：${llm.model}\n- 交付物：单文件 HTML（内联 CSS / JS）\n- 数据持久化：浏览器 localStorage\n\n继续描述想改的地方即可迭代。`;
+      ? `已根据你的要求重新生成应用。\n\n- 生成方式：${active.model} 完整重写单文件应用\n- 数据存储：浏览器 localStorage\n- 提醒：大模型生成的应用已替换上一版，可继续用自然语言迭代`
+      : `已经为你生成一个完整应用，直接运行在右侧预览区。\n\n- 生成方式：${active.model}\n- 交付物：单文件 HTML（内联 CSS / JS）\n- 数据持久化：浏览器 localStorage\n\n继续描述想改的地方即可迭代。`;
     const agentMsg = makeAgentMessage(reply, finalSteps, 'llm');
     const finalMessages = [...messages, userMsg, agentMsg];
     const files = [{ path: 'index.html' as const, language: 'html' as const, content: result.html }];
@@ -302,14 +236,13 @@ export default function App() {
     setMessages((prev) => [...prev, userMsg]);
     setGenerating(true);
     try {
-      if (engine === 'llm') await runLLM(text, userMsg);
-      else await runBuiltin(text, userMsg);
+      await runLLM(text, userMsg);
     } catch (err) {
       setDraft(null);
       const message = (err as Error).message || '生成失败';
       setMessages((prev) => [
         ...prev,
-        makeAgentMessage(`这次没有完成：${message}\n\n你可以调整设置或换一种描述再试一次。`, [], engine),
+        makeAgentMessage(`这次没有完成：${message}\n\n你可以调整设置或换一种描述再试一次。`, [], 'llm'),
       ]);
       toast(message, 'error');
     } finally {
@@ -365,11 +298,9 @@ export default function App() {
     }
   };
 
-  const saveSettings = (nextEngine: 'builtin' | 'llm', config: LLMConfig) => {
+  const saveSettings = (config: LLMConfig) => {
     saveLLMConfig(config);
-    localStorage.setItem('atom-engine', nextEngine);
     setLlm(config);
-    setEngine(nextEngine);
     setSettingsOpen(false);
     toast('设置已保存', 'success');
   };
@@ -399,7 +330,7 @@ export default function App() {
         workspace={workspace}
         projects={projects}
         activeId={project?.id || null}
-        engineLabel={engine === 'llm' ? `大模型 · ${llm.model}` : '内置引擎 · 就绪'}
+        engineLabel={`大模型 · ${llm.model || serverModel?.model || '未配置'}`}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onNew={resetToNew}
@@ -419,8 +350,8 @@ export default function App() {
           messages={messages}
           draft={draft}
           generating={generating}
-          engine={engine}
-          llmModel={llm.model}
+          llmModel={llm.model || serverModel?.model || ''}
+          serverDefault={Boolean(serverModel?.available)}
           mobileHidden={mobileView === 'preview'}
           onToggleSidebar={() => setSidebarOpen(true)}
           onNew={resetToNew}
@@ -458,7 +389,6 @@ export default function App() {
 
       {settingsOpen && (
         <SettingsModal
-          engine={engine}
           llm={llm}
           serverDefault={serverModel}
           onClose={() => setSettingsOpen(false)}

@@ -71,8 +71,8 @@ interface Props {
   messages: ChatMessage[];
   draft: { steps: AgentStep[]; content: string; engine: 'builtin' | 'llm' } | null;
   generating: boolean;
-  engine: 'builtin' | 'llm';
   llmModel: string;
+  serverDefault: boolean;
   mobileHidden?: boolean;
   onToggleSidebar: () => void;
   onNew: () => void;
@@ -86,8 +86,8 @@ export function ChatPanel({
   messages,
   draft,
   generating,
-  engine,
   llmModel,
+  serverDefault,
   mobileHidden,
   onToggleSidebar,
   onNew,
@@ -172,7 +172,7 @@ export function ChatPanel({
                 ))}
               </div>
               <div className="hero-foot">
-                <Sparkles size={12} /> 默认使用内置生成引擎，无需 API Key
+                <Sparkles size={12} /> {serverDefault ? '默认使用大模型生成，无需 API Key' : '默认使用大模型生成'}
               </div>
             </div>
           )}
@@ -266,9 +266,9 @@ export function ChatPanel({
               }}
             />
             <div className="composer-bar">
-              <button className="engine-select" onClick={onOpenSettings} title="切换生成引擎">
+              <button className="engine-select" onClick={onOpenSettings} title="切换生成模型">
                 <Sparkles size={11} />
-                {engine === 'llm' ? llmModel || '大模型' : '内置引擎'}
+                {llmModel || '选择模型'}
               </button>
               <span className="composer-hint">Enter 发送 · Shift+Enter 换行</span>
               <button className="send-btn" onClick={send} disabled={!text.trim() || generating} title="发送">
@@ -277,9 +277,9 @@ export function ChatPanel({
             </div>
           </div>
           <div className="composer-note">
-            {engine === 'llm'
-              ? '当前使用大模型生成 · Key 仅用于本次请求，不写入服务端存储'
-              : '内置引擎 · 可离线运行 · 生成的应用数据保存在浏览器本地'}
+            {serverDefault
+              ? '当前使用本站提供的大模型 · 无需填写 Key · 生成的应用数据保存在浏览器本地'
+              : '当前使用大模型生成 · 请在设置中填写自己的 Key · 应用数据保存在浏览器本地'}
           </div>
         </div>
       </div>
