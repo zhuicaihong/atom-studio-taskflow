@@ -4,7 +4,7 @@ import { Sidebar } from './components/Sidebar';
 import { ChatPanel } from './components/ChatPanel';
 import { PreviewPanel } from './components/PreviewPanel';
 import { Onboarding, SettingsModal, ShareModal, ToastRoot } from './components/Modals';
-import { api, loadLLMConfig, saveLLMConfig } from './lib/api';
+import { api, getDefaultModel, loadLLMConfig, saveLLMConfig } from './lib/api';
 import { generate, makeAgentMessage, makeUserMessage, revise } from './lib/agent/engine';
 import { inferSpec } from './lib/agent/specs';
 import { generateWithLLM } from './lib/agent/llm';
@@ -55,6 +55,24 @@ export default function App() {
     const config = loadLLMConfig();
     return saved === 'llm' && config.apiKey ? 'llm' : 'builtin';
   });
+  const [serverModel, setServerModel] = useState<{ available: boolean; model: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getDefaultModel().then((info) => {
+      if (cancelled) return;
+      setServerModel(info);
+      if (!info.available) return;
+      if (localStorage.getItem('atom-engine') === 'builtin') return;
+      const saved = loadLLMConfig();
+      if (saved.apiKey) return;
+      setLlm({ ...saved, model: info.model, useDefault: true });
+      setEngine('llm');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const toast = (text: string, tone: ToastItem['tone'] = 'default') => {
     const id = uid();
@@ -194,7 +212,8 @@ export default function App() {
   };
 
   const runLLM = async (text: string, userMsg: ChatMessage) => {
-    if (!llm.apiKey.trim()) {
+    const usingServerModel = Boolean(llm.useDefault && serverModel?.available);
+    if (!usingServerModel && !llm.apiKey.trim()) {
       setSettingsOpen(true);
       throw new Error('还没有配置大模型 API Key，请先在设置里填写。');
     }
@@ -441,6 +460,7 @@ export default function App() {
         <SettingsModal
           engine={engine}
           llm={llm}
+          serverDefault={serverModel}
           onClose={() => setSettingsOpen(false)}
           onSave={saveSettings}
         />

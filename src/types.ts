@@ -100,6 +100,7 @@ export interface LLMConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  useDefault?: boolean;
 }
 
 export interface ToastItem {

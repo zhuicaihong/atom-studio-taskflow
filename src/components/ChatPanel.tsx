@@ -278,7 +278,7 @@ export function ChatPanel({
           </div>
           <div className="composer-note">
             {engine === 'llm'
-              ? '当前使用大模型生成，密钥仅保存在你的浏览器中'
+              ? '当前使用大模型生成 · Key 仅用于本次请求，不写入服务端存储'
               : '内置引擎 · 可离线运行 · 生成的应用数据保存在浏览器本地'}
           </div>
         </div>

@@ -230,9 +230,58 @@ app.get('/p/:slug', (req, res) => {
 /* LLM 代理（密钥仅在单次请求中透传，不落盘）                              */
 /* ------------------------------------------------------------------ */
 
+const DEFAULT_LLM = {
+  baseUrl: String(process.env.LLM_BASE_URL || '').trim().replace(/\/+$/, ''),
+  apiKey: String(process.env.LLM_API_KEY || '').trim(),
+  model: String(process.env.LLM_MODEL || '').trim(),
+};
+const DEFAULT_LLM_AVAILABLE = Boolean(DEFAULT_LLM.baseUrl && DEFAULT_LLM.apiKey && DEFAULT_LLM.model);
+
+const LLM_RATE_LIMIT = Number(process.env.LLM_RATE_LIMIT || 10);
+const LLM_RATE_WINDOW = 60 * 60 * 1000;
+const llmQuota = new Map();
+
+function takeQuota(ip) {
+  const now = Date.now();
+  const hits = (llmQuota.get(ip) || []).filter((t) => now - t < LLM_RATE_WINDOW);
+  if (hits.length >= LLM_RATE_LIMIT) {
+    llmQuota.set(ip, hits);
+    return false;
+  }
+  hits.push(now);
+  llmQuota.set(ip, hits);
+  return true;
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, hits] of llmQuota) {
+    const alive = hits.filter((t) => now - t < LLM_RATE_WINDOW);
+    if (alive.length) llmQuota.set(ip, alive);
+    else llmQuota.delete(ip);
+  }
+}, 60000).unref();
+
+function clientIp(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return forwarded || req.socket.remoteAddress || 'unknown';
+}
+
+function quotaError(res) {
+  return res.status(429).json({
+    error: `演示额度已用完（每个 IP 每小时 ${LLM_RATE_LIMIT} 次），请稍后再试，或在设置里填写自己的模型 Key`,
+  });
+}
+
 function readLlmRequest(body) {
-  const { baseUrl, apiKey, model, messages, temperature } = body || {};
-  if (!baseUrl || !apiKey || !model || !Array.isArray(messages)) {
+  const { messages, temperature, useDefault } = body || {};
+  if (!Array.isArray(messages)) return { error: '缺少消息内容（messages）' };
+  if (useDefault && !DEFAULT_LLM_AVAILABLE) {
+    return { error: '服务端没有配置默认模型，请在设置里填写自己的 Base URL 与 Key' };
+  }
+  const source = useDefault ? DEFAULT_LLM : body || {};
+  const { baseUrl, apiKey, model } = source;
+  if (!baseUrl || !apiKey || !model) {
     return { error: '缺少模型配置（baseUrl / apiKey / model）' };
   }
   let url;
@@ -249,8 +298,16 @@ function readLlmRequest(body) {
     model,
     messages,
     temperature: typeof temperature === 'number' ? temperature : 0.6,
+    useDefault: Boolean(useDefault),
   };
 }
+
+app.get('/api/llm/default', (req, res) => {
+  res.json({
+    available: DEFAULT_LLM_AVAILABLE,
+    model: DEFAULT_LLM_AVAILABLE ? DEFAULT_LLM.model : '',
+  });
+});
 
 async function requestLlm(config, signal, stream = false) {
   const upstream = await fetch(config.url, {
@@ -335,6 +392,7 @@ async function streamLlm(config, signal, onDelta, onActivity) {
 app.post('/api/llm/chat', async (req, res) => {
   const config = readLlmRequest(req.body);
   if (config.error) return res.status(400).json({ error: config.error });
+  if (config.useDefault && !takeQuota(clientIp(req))) return quotaError(res);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 120000);
   try {
@@ -363,6 +421,7 @@ setInterval(() => {
 app.post('/api/llm/jobs', (req, res) => {
   const config = readLlmRequest(req.body);
   if (config.error) return res.status(400).json({ error: config.error });
+  if (config.useDefault && !takeQuota(clientIp(req))) return quotaError(res);
   const id = crypto.randomUUID();
   const controller = new AbortController();
   const job = {

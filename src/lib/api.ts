@@ -54,3 +54,14 @@ export function loadLLMConfig(): LLMConfig {
 export function saveLLMConfig(config: LLMConfig) {
   localStorage.setItem('atom-llm-config', JSON.stringify(config));
 }
+
+export async function getDefaultModel(): Promise<{ available: boolean; model: string }> {
+  try {
+    const res = await fetch('/api/llm/default');
+    if (!res.ok) return { available: false, model: '' };
+    const data = await res.json();
+    return { available: Boolean(data.available), model: String(data.model || '') };
+  } catch {
+    return { available: false, model: '' };
+  }
+}

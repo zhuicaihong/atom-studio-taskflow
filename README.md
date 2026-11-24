@@ -88,6 +88,20 @@ npm start          # 单进程 http://localhost:8787
 
 环境变量：`PORT`（默认 8787）、`DATA_DIR`（默认 `./data`）。
 
+### 服务端默认模型（可选）
+
+不配置也不影响使用，默认走内置引擎。配置后访问者无需填写 Key 即可用大模型生成：
+
+```bash
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=sk-...           # 只放在部署环境，不会下发到浏览器
+LLM_MODEL=gpt-4o-mini
+LLM_RATE_LIMIT=10            # 每个 IP 每小时的生成次数，默认 10
+LLM_IDLE_TIMEOUT_MS=180000   # 连续多久没有新数据才中断，默认 180s
+```
+
+前端通过 `/api/llm/default` 获取可用性，只拿得到模型名，拿不到 Key。
+
 ## 4. 目录结构
 
 ```

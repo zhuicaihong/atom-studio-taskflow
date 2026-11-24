@@ -88,8 +88,8 @@ export function Onboarding({ busy, onCreate }: { busy: boolean; onCreate: (name:
             </button>
           </form>
           <div className="onboard-foot">
-            默认使用内置生成引擎，无需 API Key。<br />
-            也可以随时在设置里接入 OpenAI 兼容的大模型。
+            开箱即用，无需 API Key。<br />
+            也可以随时在设置里填写自己的大模型 Key。
           </div>
         </div>
       </div>
@@ -104,13 +104,15 @@ export function Onboarding({ busy, onCreate }: { busy: boolean; onCreate: (name:
 interface SettingsProps {
   engine: 'builtin' | 'llm';
   llm: LLMConfig;
+  serverDefault: { available: boolean; model: string } | null;
   onClose: () => void;
   onSave: (engine: 'builtin' | 'llm', llm: LLMConfig) => void;
 }
 
-export function SettingsModal({ engine, llm, onClose, onSave }: SettingsProps) {
+export function SettingsModal({ engine, llm, serverDefault, onClose, onSave }: SettingsProps) {
   const [nextEngine, setNextEngine] = useState(engine);
   const [config, setConfig] = useState<LLMConfig>(llm);
+  const [useDefault, setUseDefault] = useState(Boolean(llm.useDefault && serverDefault?.available));
   const [showKey, setShowKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
@@ -118,14 +120,17 @@ export function SettingsModal({ engine, llm, onClose, onSave }: SettingsProps) {
   const update = (patch: Partial<LLMConfig>) => setConfig((c) => ({ ...c, ...patch }));
 
   const runTest = async () => {
-    if (!config.baseUrl || !config.apiKey || !config.model) {
+    const payload = useDefault && serverDefault?.available
+      ? { baseUrl: '', apiKey: '', model: serverDefault.model, useDefault: true }
+      : config;
+    if (!payload.useDefault && (!payload.baseUrl || !payload.apiKey || !payload.model)) {
       setResult({ ok: false, text: '请先填写 Base URL、API Key 和模型名称' });
       return;
     }
     setTesting(true);
     setResult(null);
     try {
-      const reply = await testLLM(config);
+      const reply = await testLLM(payload);
       setResult({ ok: true, text: `连接成功：${reply}` });
     } catch (err) {
       setResult({ ok: false, text: (err as Error).message });
@@ -156,9 +161,26 @@ export function SettingsModal({ engine, llm, onClose, onSave }: SettingsProps) {
             onClick={() => setNextEngine('llm')}
           >
             <b><Sparkles size={12} style={{ verticalAlign: -1 }} /> 大模型</b>
-            <span>OpenAI 兼容接口，可生成任意类型的单文件应用，需要你自己的 API Key。</span>
+            <span>
+              OpenAI 兼容接口，可生成任意类型的单文件应用。
+              {serverDefault?.available ? ' 已配置服务端默认模型，可直接使用。' : ' 需要你自己的 API Key。'}
+            </span>
           </button>
         </div>
+
+        {serverDefault?.available && (
+          <label className="server-model-option">
+            <input
+              type="checkbox"
+              checked={useDefault}
+              onChange={(e) => setUseDefault(e.target.checked)}
+            />
+            <span>
+              使用服务端默认模型 <b>{serverDefault.model}</b>，无需填写 Key
+              <em>由本站统一提供，每人每小时有调用次数限制；也可以取消勾选后填自己的 Key。</em>
+            </span>
+          </label>
+        )}
 
         <div className="field">
           <label>Base URL</label>
@@ -166,6 +188,7 @@ export function SettingsModal({ engine, llm, onClose, onSave }: SettingsProps) {
             value={config.baseUrl}
             onChange={(e) => update({ baseUrl: e.target.value })}
             placeholder="https://api.openai.com/v1"
+            disabled={useDefault && Boolean(serverDefault?.available)}
           />
         </div>
         <div className="field">
@@ -177,12 +200,14 @@ export function SettingsModal({ engine, llm, onClose, onSave }: SettingsProps) {
               onChange={(e) => update({ apiKey: e.target.value })}
               placeholder="sk-…"
               style={{ paddingRight: 36 }}
+              disabled={useDefault && Boolean(serverDefault?.available)}
             />
             <button
               type="button"
               className="icon-button"
               style={{ position: 'absolute', right: 3, top: 3 }}
               onClick={() => setShowKey((v) => !v)}
+              disabled={useDefault && Boolean(serverDefault?.available)}
             >
               {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
             </button>
@@ -191,9 +216,10 @@ export function SettingsModal({ engine, llm, onClose, onSave }: SettingsProps) {
         <div className="field">
           <label>模型</label>
           <input
-            value={config.model}
+            value={useDefault && serverDefault?.available ? serverDefault.model : config.model}
             onChange={(e) => update({ model: e.target.value })}
             placeholder="gpt-4o-mini / deepseek-chat …"
+            disabled={useDefault && Boolean(serverDefault?.available)}
           />
         </div>
 
@@ -214,11 +240,17 @@ export function SettingsModal({ engine, llm, onClose, onSave }: SettingsProps) {
           <button
             className="btn primary"
             onClick={() => {
-              if (nextEngine === 'llm' && !config.apiKey.trim()) {
-                setResult({ ok: false, text: '使用大模型前需要填写 API Key' });
+              const usingServerModel = useDefault && Boolean(serverDefault?.available);
+              if (nextEngine === 'llm' && !usingServerModel && !config.apiKey.trim()) {
+                setResult({ ok: false, text: '使用大模型前需要填写 API Key，或勾选服务端默认模型' });
                 return;
               }
-              onSave(nextEngine, config);
+              onSave(
+                nextEngine,
+                usingServerModel
+                  ? { baseUrl: '', apiKey: '', model: serverDefault!.model, useDefault: true }
+                  : { ...config, useDefault: false }
+              );
             }}
           >
             保存设置
